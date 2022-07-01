@@ -12,16 +12,18 @@ type Pool interface {
 }
 
 type pool struct {
-	maxWorkers      int
+	maxWorkers      uint64
 	mt              *sync.Mutex
 	wg              *sync.WaitGroup
 	tasksInProgress uint64
 	tasksFinished   uint64
 	tasksSuccessful uint64
 	tasksFailed     uint64
+
+	queuedTasks []func() error
 }
 
-func NewPool(maxWorkers int) Pool {
+func NewPool(maxWorkers uint64) Pool {
 	return &pool{
 		maxWorkers:      maxWorkers,
 		wg:              &sync.WaitGroup{},
@@ -32,27 +34,64 @@ func NewPool(maxWorkers int) Pool {
 }
 
 func (p *pool) Do(f func() error) {
+	if p.tasksInProgress >= p.maxWorkers {
+		p.pushTask(f)
+		return
+	}
+
+	p.trackInProgress()
+	go p.runTask(f)
+}
+
+func (p *pool) trackInProgress() {
 	p.mt.Lock()
 	p.tasksInProgress++
 	p.mt.Unlock()
 
 	p.wg.Add(1)
-	go func() {
-		defer p.wg.Done()
-		err := f()
+}
 
-		p.mt.Lock()
-		defer p.mt.Unlock()
+func (p *pool) popTask() func() error {
+	var f func() error
 
-		if err != nil {
-			p.tasksFailed++
-		} else {
-			p.tasksSuccessful++
-		}
+	p.mt.Lock()
+	f, p.queuedTasks = p.queuedTasks[0], p.queuedTasks[1:]
+	p.mt.Unlock()
 
-		p.tasksFinished++
-		p.tasksInProgress--
-	}()
+	return f
+}
+
+func (p *pool) pushTask(f func() error) {
+	p.mt.Lock()
+	p.queuedTasks = append(p.queuedTasks, f)
+	p.mt.Unlock()
+}
+
+func (p *pool) trackResult(err error) {
+	p.mt.Lock()
+	if err != nil {
+		p.tasksFailed++
+	} else {
+		p.tasksSuccessful++
+	}
+
+	p.tasksFinished++
+	p.tasksInProgress--
+	p.mt.Unlock()
+}
+
+func (p *pool) runTask(f func() error) {
+	defer p.wg.Done()
+
+	err := f()
+	p.trackResult(err)
+
+	if len(p.queuedTasks) > 0 {
+		f := p.popTask()
+
+		p.trackInProgress()
+		go p.runTask(f)
+	}
 }
 
 func (p *pool) Wait() error {
