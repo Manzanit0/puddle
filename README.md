@@ -1,7 +1,7 @@
 # Puddle
 
 Puddle is a minimalistic worker pool library. It's not intended to be performant
-or api-rich, just as a learning experiment.
+or api-rich, just a learning experiment.
 
 ## Architecture
 
